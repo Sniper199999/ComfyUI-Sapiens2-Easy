@@ -572,7 +572,7 @@ def _write_pointmap_glb(
     return str(path)
 
 
-POSE_TARGETS = ("BODY_25", "308-keypoint", "COCO_18", "OpenPose hand 21 + 21", "OpenPose face 70")
+POSE_TARGETS = ("BODY_25", "DWPose", "308-keypoint", "COCO_18", "OpenPose hand 21 + 21", "OpenPose face 70")
 _COCO18 = (0, 69, 6, 8, 41, 5, 7, 62, 10, 12, 14, 9, 11, 13, 2, 1, 4, 3)
 _BODY25 = (0, 69, 6, 8, 41, 5, 7, 62, (9, 10), 10, 12, 14, 9, 11, 13, 2, 1, 4, 3, 15, 16, 17, 18, 19, 20)
 _RIGHT_HAND21 = (41, 24, 23, 22, 21, 28, 27, 26, 25, 32, 31, 30, 29, 36, 35, 34, 33, 40, 39, 38, 37)
@@ -687,6 +687,8 @@ _GOLIATH_FACE = dict(
 
 def _pose_target_key(target: str) -> str:
     text = str(target or "").lower()
+    if "dwpose" in text or "wholebody" in text:
+        return "dwpose"
     if "308" in text:
         return "sapiens_308"
     if "coco" in text:
@@ -824,6 +826,16 @@ def _face70(triples: np.ndarray) -> np.ndarray:
 
 def _target_triples(triples: np.ndarray, target: str) -> np.ndarray:
     key = _pose_target_key(target)
+    if key == "dwpose":
+        return np.concatenate(
+            [
+                _subset(triples, _BODY25),
+                _subset(triples, _LEFT_HAND21),
+                _subset(triples, _RIGHT_HAND21),
+                _face70(triples),
+            ],
+            axis=0,
+        )
     if key == "coco_18":
         return _subset(triples, _COCO18)
     if key == "sapiens_308":
@@ -889,6 +901,16 @@ def _draw_pose(
 
 def _target_edges(raw: dict[str, Any], target: str) -> tuple[tuple[int, int], ...]:
     key = _pose_target_key(target)
+    if key == "dwpose":
+        left_hand_offset = len(_BODY25)
+        right_hand_offset = left_hand_offset + len(_LEFT_HAND21)
+        face_offset = right_hand_offset + len(_RIGHT_HAND21)
+        return (
+            _BODY25_EDGES
+            + tuple((a + left_hand_offset, b + left_hand_offset) for a, b in _HAND21_EDGES)
+            + tuple((a + right_hand_offset, b + right_hand_offset) for a, b in _HAND21_EDGES)
+            + tuple((a + face_offset, b + face_offset) for a, b in _FACE70_EDGES)
+        )
     if key == "coco_18":
         return _COCO18_EDGES
     if key == "hand_21":
@@ -959,7 +981,12 @@ def _openpose_json(raw: dict[str, Any], target: str) -> str:
                 "face_keypoints_2d": [],
                 "sapiens_keypoints_2d": _flat(source),
             }
-            if target_key in ("body_25", "coco_18"):
+            if target_key == "dwpose":
+                person["pose_keypoints_2d"] = _flat(_subset(source, _BODY25))
+                person["hand_left_keypoints_2d"] = _flat(_subset(source, _LEFT_HAND21))
+                person["hand_right_keypoints_2d"] = _flat(_subset(source, _RIGHT_HAND21))
+                person["face_keypoints_2d"] = _flat(_face70(source))
+            elif target_key in ("body_25", "coco_18"):
                 person["pose_keypoints_2d"] = _flat(_target_triples(source, target))
             elif target_key == "sapiens_308":
                 person["pose_keypoints_2d"] = _flat(source)
@@ -1224,7 +1251,7 @@ class Sapiens2Pose:
         }
 
     RETURN_TYPES = ("IMAGE", "IMAGE", "STRING")
-    RETURN_NAMES = ("openpose_image", "preview", "openpose_json")
+    RETURN_NAMES = ("pose_image", "preview", "openpose_json")
     FUNCTION = "run"
     CATEGORY = "Sapiens2"
 

@@ -169,6 +169,7 @@ part row를 추가하지 않으면 foreground 신체 부위 전체를 병합합�
 **Sapiens2 Pose**는 다음 출력 target을 지원합니다.
 
 - `BODY_25`
+- `DWPose`
 - `308-keypoint`
 - `COCO_18`
 - `OpenPose hand 21 + 21`

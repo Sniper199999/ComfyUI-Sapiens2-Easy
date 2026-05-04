@@ -172,7 +172,7 @@ class Sapiens2PoseAdvanced:
         }
 
     RETURN_TYPES = ("IMAGE", "IMAGE", "MASK", "STRING", "SAPIENS2_POSE_RESULT")
-    RETURN_NAMES = ("openpose_image", "preview", "keypoint_mask", "openpose_json", "result")
+    RETURN_NAMES = ("pose_image", "preview", "keypoint_mask", "openpose_json", "result")
     FUNCTION = "run"
     CATEGORY = "Sapiens2/Advanced"
 

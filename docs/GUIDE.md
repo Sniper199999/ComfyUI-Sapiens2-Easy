@@ -169,6 +169,7 @@ Note: pointmap mesh export reconstructs the visible surface from a single image.
 **Sapiens2 Pose** supports these output targets:
 
 - `BODY_25`
+- `DWPose`
 - `308-keypoint`
 - `COCO_18`
 - `OpenPose hand 21 + 21`

@@ -22,7 +22,7 @@
   </tr>
   <tr>
     <td align="center"><strong>Pointmap을 points, splats, textured mesh GLB로 내보낼 수 있습니다.</strong></td>
-    <td align="center"><strong>BODY_25, COCO_18, 308-keypoint, hand, face용 pose 출력을 생성합니다.</strong></td>
+    <td align="center"><strong>BODY_25, DWPose, COCO_18, 308-keypoint, hand, face용 pose 출력을 생성합니다.</strong></td>
   </tr>
 </table>
 
@@ -34,7 +34,7 @@
 - **자동 다운로드와 재사용**: 공식 Hugging Face 가중치를 `ComfyUI/models/sapiens2/`에 저장하고 재사용합니다.
 - **마스크 중심 사람 워크플로**: 사람 영역을 분리한 뒤 normal 또는 pointmap으로 바로 연결합니다.
 - **단일 이미지 3D 내보내기**: pointmap을 points, splats, textured `.glb` mesh로 내보낼 수 있습니다.
-- **후속 도구 친화적인 pose 출력**: `BODY_25`, `COCO_18`, `308-keypoint`, hand, face target을 생성합니다.
+- **후속 도구 친화적인 pose 출력**: `BODY_25`, `DWPose`, `COCO_18`, `308-keypoint`, hand, face target을 생성합니다.
 - **ComfyUI 환경 보호 설치**: 설치 과정에서 PyTorch/CUDA 런타임 스택이 조용히 바뀌지 않도록 보호합니다.
 
 ## 지원 기능

@@ -22,7 +22,7 @@ Build a full human-analysis graph with segmentation, normal estimation, pointmap
   </tr>
   <tr>
     <td align="center"><strong>Export pointmaps as points, splats, or textured mesh GLB.</strong></td>
-    <td align="center"><strong>Generate pose outputs for BODY_25, COCO_18, 308-keypoint, hands, and face.</strong></td>
+    <td align="center"><strong>Generate pose outputs for BODY_25, DWPose, COCO_18, 308-keypoint, hands, and face.</strong></td>
   </tr>
 </table>
 
@@ -34,7 +34,7 @@ Build a full human-analysis graph with segmentation, normal estimation, pointmap
 - **Auto download and reuse**: official Hugging Face weights are saved under `ComfyUI/models/sapiens2/`.
 - **Mask-first human workflows**: segment the person, then feed that mask into normal or pointmap nodes.
 - **Single-image 3D export**: export pointmaps as points, splats, or textured `.glb` meshes.
-- **Pose outputs for downstream tools**: generate `BODY_25`, `COCO_18`, `308-keypoint`, hand, and face targets.
+- **Pose outputs for downstream tools**: generate `BODY_25`, `DWPose`, `COCO_18`, `308-keypoint`, hand, and face targets.
 - **ComfyUI-safe install path**: the installer avoids silently replacing your PyTorch/CUDA runtime stack.
 
 ## What It Supports
