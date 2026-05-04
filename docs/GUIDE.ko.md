@@ -176,6 +176,7 @@ part row를 추가하지 않으면 foreground 신체 부위 전체를 병합합�
 - `OpenPose face 70`
 
 출력에는 black-background pose render, overlay preview, OpenPose 스타일 JSON이 포함됩니다. Raw Sapiens2 keypoint 데이터는 JSON의 `sapiens_keypoints_2d`에 보존됩니다.
+`DWPose` target은 `pose_keypoints_2d`에 BODY_18, `hand_left_keypoints_2d`/`hand_right_keypoints_2d`에 21-keypoint hand, `face_keypoints_2d`에 face 68-keypoint를 채웁니다.
 
 Pose detection은 사용 가능한 경우 로컬 RTMDet 파일을 사용합니다.
 

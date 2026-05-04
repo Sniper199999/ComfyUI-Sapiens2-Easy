@@ -176,6 +176,7 @@ Note: pointmap mesh export reconstructs the visible surface from a single image.
 - `OpenPose face 70`
 
 Outputs include a black-background pose render, an overlay preview, and OpenPose-style JSON. Raw Sapiens2 keypoint data is retained in the JSON as `sapiens_keypoints_2d`.
+The `DWPose` target fills `pose_keypoints_2d` with BODY_18, `hand_left_keypoints_2d`/`hand_right_keypoints_2d` with 21-keypoint hands, and `face_keypoints_2d` with 68 face keypoints.
 
 Pose detection uses a local RTMDet file when available:
 

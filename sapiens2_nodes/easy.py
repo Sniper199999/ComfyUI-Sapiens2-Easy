@@ -574,9 +574,49 @@ def _write_pointmap_glb(
 
 POSE_TARGETS = ("BODY_25", "DWPose", "308-keypoint", "COCO_18", "OpenPose hand 21 + 21", "OpenPose face 70")
 _COCO18 = (0, 69, 6, 8, 41, 5, 7, 62, 10, 12, 14, 9, 11, 13, 2, 1, 4, 3)
+_BODY18 = _COCO18
 _BODY25 = (0, 69, 6, 8, 41, 5, 7, 62, (9, 10), 10, 12, 14, 9, 11, 13, 2, 1, 4, 3, 15, 16, 17, 18, 19, 20)
 _RIGHT_HAND21 = (41, 24, 23, 22, 21, 28, 27, 26, 25, 32, 31, 30, 29, 36, 35, 34, 33, 40, 39, 38, 37)
 _LEFT_HAND21 = (62, 45, 44, 43, 42, 49, 48, 47, 46, 53, 52, 51, 50, 57, 56, 55, 54, 61, 60, 59, 58)
+_BODY18_NAMES = (
+    "nose",
+    "neck",
+    "right_shoulder",
+    "right_elbow",
+    "right_wrist",
+    "left_shoulder",
+    "left_elbow",
+    "left_wrist",
+    "right_hip",
+    "right_knee",
+    "right_ankle",
+    "left_hip",
+    "left_knee",
+    "left_ankle",
+    "right_eye",
+    "left_eye",
+    "right_ear",
+    "left_ear",
+)
+_BODY18_ALIASES = {
+    "nose": ("nose",),
+    "right_shoulder": ("right_shoulder", "r_shoulder", "right_acromion", "r_acromion"),
+    "right_elbow": ("right_elbow", "r_elbow"),
+    "right_wrist": ("right_wrist", "r_wrist"),
+    "left_shoulder": ("left_shoulder", "l_shoulder", "left_acromion", "l_acromion"),
+    "left_elbow": ("left_elbow", "l_elbow"),
+    "left_wrist": ("left_wrist", "l_wrist"),
+    "right_hip": ("right_hip", "r_hip"),
+    "right_knee": ("right_knee", "r_knee"),
+    "right_ankle": ("right_ankle", "r_ankle"),
+    "left_hip": ("left_hip", "l_hip"),
+    "left_knee": ("left_knee", "l_knee"),
+    "left_ankle": ("left_ankle", "l_ankle"),
+    "right_eye": ("right_eye", "r_eye"),
+    "left_eye": ("left_eye", "l_eye"),
+    "right_ear": ("right_ear", "r_ear"),
+    "left_ear": ("left_ear", "l_ear"),
+}
 _BODY25_EDGES = (
     (1, 8),
     (1, 2),
@@ -622,6 +662,7 @@ _COCO18_EDGES = (
     (0, 15),
     (15, 17),
 )
+_BODY18_EDGES = _COCO18_EDGES
 _HAND21_EDGES = (
     (0, 1),
     (1, 2),
@@ -724,6 +765,84 @@ def _subset(triples: np.ndarray, indices: tuple[Any, ...]) -> np.ndarray:
     return np.stack([_pick(triples, item) for item in indices]).astype(np.float32)
 
 
+def _normalize_keypoint_name(name: Any) -> str:
+    return "".join(ch for ch in str(name).lower() if ch.isalnum())
+
+
+def _metainfo(raw: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    metainfo = raw.get("metainfo", {})
+    return metainfo if isinstance(metainfo, dict) else {}
+
+
+def _name_to_keypoint_id(raw: dict[str, Any] | None) -> dict[str, int]:
+    metainfo = _metainfo(raw)
+    lookup: dict[str, int] = {}
+    for name, index in metainfo.get("keypoint_name2id", {}).items():
+        lookup[_normalize_keypoint_name(name)] = int(index)
+    for index, name in enumerate(raw.get("keypoint_names", []) if isinstance(raw, dict) else []):
+        lookup.setdefault(_normalize_keypoint_name(name), int(index))
+    return lookup
+
+
+def _pick_name(triples: np.ndarray, raw: dict[str, Any] | None, names: tuple[str, ...], fallback: Any = None) -> np.ndarray:
+    lookup = _name_to_keypoint_id(raw)
+    for name in names:
+        index = lookup.get(_normalize_keypoint_name(name))
+        if index is not None:
+            return _pick(triples, index)
+    return _pick(triples, fallback)
+
+
+def _valid_triple(point: np.ndarray, threshold: float = 0.0) -> bool:
+    return bool(point.shape[0] >= 3 and point[2] > threshold and point[0] > 0 and point[1] > 0)
+
+
+def _avg_triples(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    if not _valid_triple(a) or not _valid_triple(b):
+        return np.zeros(3, dtype=np.float32)
+    return np.array([(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, min(a[2], b[2])], dtype=np.float32)
+
+
+def _group_by_name(triples: np.ndarray, raw: dict[str, Any] | None, group_key: str, fallback: tuple[Any, ...], count: int) -> np.ndarray:
+    names = _metainfo(raw).get(group_key, [])
+    lookup = _name_to_keypoint_id(raw)
+    if isinstance(names, (list, tuple)) and len(names) == count:
+        picked = [_pick(triples, lookup.get(_normalize_keypoint_name(name))) for name in names]
+        return np.stack(picked).astype(np.float32)
+    return _subset(triples, fallback)
+
+
+def _dwpose_body18(triples: np.ndarray, raw: dict[str, Any] | None) -> np.ndarray:
+    fallback = dict(zip(_BODY18_NAMES, _BODY18))
+    body = {
+        name: _pick_name(triples, raw, _BODY18_ALIASES.get(name, (name,)), fallback.get(name))
+        for name in _BODY18_NAMES
+        if name != "neck"
+    }
+    neck = _avg_triples(body["left_shoulder"], body["right_shoulder"])
+    body["neck"] = neck if _valid_triple(neck) else _pick(triples, fallback["neck"])
+    return np.stack([body[name] for name in _BODY18_NAMES]).astype(np.float32)
+
+
+def _dwpose_left_hand21(triples: np.ndarray, raw: dict[str, Any] | None) -> np.ndarray:
+    return _group_by_name(triples, raw, "left_hand_keypoint_names", _LEFT_HAND21, 21)
+
+
+def _dwpose_right_hand21(triples: np.ndarray, raw: dict[str, Any] | None) -> np.ndarray:
+    return _group_by_name(triples, raw, "right_hand_keypoint_names", _RIGHT_HAND21, 21)
+
+
+def _dwpose_face68(triples: np.ndarray, raw: dict[str, Any] | None) -> np.ndarray:
+    names = _metainfo(raw).get("face_keypoint_names", [])
+    lookup = _name_to_keypoint_id(raw)
+    if isinstance(names, (list, tuple)) and len(names) == 68:
+        picked = [_pick(triples, lookup.get(_normalize_keypoint_name(name))) for name in names]
+        return np.stack(picked).astype(np.float32)
+    return _face70(triples)[:68].astype(np.float32)
+
+
 def _face70(triples: np.ndarray) -> np.ndarray:
     face: list[np.ndarray] = []
     mapping = _GOLIATH_FACE
@@ -824,15 +943,15 @@ def _face70(triples: np.ndarray) -> np.ndarray:
     return np.stack(face).astype(np.float32)
 
 
-def _target_triples(triples: np.ndarray, target: str) -> np.ndarray:
+def _target_triples(triples: np.ndarray, target: str, raw: dict[str, Any] | None = None) -> np.ndarray:
     key = _pose_target_key(target)
     if key == "dwpose":
         return np.concatenate(
             [
-                _subset(triples, _BODY25),
-                _subset(triples, _LEFT_HAND21),
-                _subset(triples, _RIGHT_HAND21),
-                _face70(triples),
+                _dwpose_body18(triples, raw),
+                _dwpose_left_hand21(triples, raw),
+                _dwpose_right_hand21(triples, raw),
+                _dwpose_face68(triples, raw),
             ],
             axis=0,
         )
@@ -899,17 +1018,76 @@ def _draw_pose(
                 cv2.circle(canvas, (x, y), max(1, int(radius)), colors[index % len(colors)], -1, lineType=cv2.LINE_AA)
 
 
+def _draw_points(canvas: np.ndarray, triples: np.ndarray, threshold: float, radius: int = 1, color: tuple[int, int, int] = (255, 255, 255)) -> None:
+    import cv2
+
+    height, width = canvas.shape[:2]
+    for point in triples:
+        if point[2] < threshold:
+            continue
+        x, y = int(round(float(point[0]))), int(round(float(point[1])))
+        if 0 <= x < width and 0 <= y < height:
+            cv2.circle(canvas, (x, y), max(1, int(radius)), color, -1, lineType=cv2.LINE_AA)
+
+
+def _draw_dwpose(
+    canvas: np.ndarray,
+    triples: np.ndarray,
+    raw: dict[str, Any],
+    threshold: float,
+    radius: int = 3,
+    thickness: int = 3,
+    show_points: bool = True,
+    show_skeleton: bool = True,
+) -> None:
+    body18 = _dwpose_body18(triples, raw)
+    left_hand21 = _dwpose_left_hand21(triples, raw)
+    right_hand21 = _dwpose_right_hand21(triples, raw)
+    face68 = _dwpose_face68(triples, raw)
+    _draw_pose(
+        canvas,
+        body18,
+        _BODY18_EDGES,
+        threshold,
+        radius=radius,
+        thickness=max(1, int(thickness) * 2),
+        show_points=show_points,
+        show_skeleton=show_skeleton,
+    )
+    hand_radius = max(1, int(radius) // 2)
+    _draw_pose(
+        canvas,
+        left_hand21,
+        _HAND21_EDGES,
+        threshold,
+        radius=hand_radius,
+        thickness=thickness,
+        show_points=show_points,
+        show_skeleton=show_skeleton,
+    )
+    _draw_pose(
+        canvas,
+        right_hand21,
+        _HAND21_EDGES,
+        threshold,
+        radius=hand_radius,
+        thickness=thickness,
+        show_points=show_points,
+        show_skeleton=show_skeleton,
+    )
+    if show_points:
+        _draw_points(canvas, face68, threshold, radius=max(1, int(radius) // 3))
+
+
 def _target_edges(raw: dict[str, Any], target: str) -> tuple[tuple[int, int], ...]:
     key = _pose_target_key(target)
     if key == "dwpose":
-        left_hand_offset = len(_BODY25)
+        left_hand_offset = len(_BODY18)
         right_hand_offset = left_hand_offset + len(_LEFT_HAND21)
-        face_offset = right_hand_offset + len(_RIGHT_HAND21)
         return (
-            _BODY25_EDGES
+            _BODY18_EDGES
             + tuple((a + left_hand_offset, b + left_hand_offset) for a, b in _HAND21_EDGES)
             + tuple((a + right_hand_offset, b + right_hand_offset) for a, b in _HAND21_EDGES)
-            + tuple((a + face_offset, b + face_offset) for a, b in _FACE70_EDGES)
         )
     if key == "coco_18":
         return _COCO18_EDGES
@@ -946,16 +1124,29 @@ def _pose_target_image(
         if index < len(frames):
             frame = frames[index]
             for keypoints, scores in zip(frame.get("keypoints", []), frame.get("keypoint_scores", [])):
-                _draw_pose(
-                    canvas,
-                    _target_triples(_triples(keypoints, scores), target),
-                    _target_edges(raw, target),
-                    threshold,
-                    radius=radius,
-                    thickness=thickness,
-                    show_points=show_points,
-                    show_skeleton=show_skeleton,
-                )
+                triples = _triples(keypoints, scores)
+                if _pose_target_key(target) == "dwpose":
+                    _draw_dwpose(
+                        canvas,
+                        triples,
+                        raw,
+                        threshold,
+                        radius=radius,
+                        thickness=thickness,
+                        show_points=show_points,
+                        show_skeleton=show_skeleton,
+                    )
+                else:
+                    _draw_pose(
+                        canvas,
+                        _target_triples(triples, target, raw),
+                        _target_edges(raw, target),
+                        threshold,
+                        radius=radius,
+                        thickness=thickness,
+                        show_points=show_points,
+                        show_skeleton=show_skeleton,
+                    )
         rendered.append(torch.from_numpy(canvas).float() / 255.0)
     return _comfy_image(torch.stack(rendered, dim=0))
 
@@ -982,10 +1173,10 @@ def _openpose_json(raw: dict[str, Any], target: str) -> str:
                 "sapiens_keypoints_2d": _flat(source),
             }
             if target_key == "dwpose":
-                person["pose_keypoints_2d"] = _flat(_subset(source, _BODY25))
-                person["hand_left_keypoints_2d"] = _flat(_subset(source, _LEFT_HAND21))
-                person["hand_right_keypoints_2d"] = _flat(_subset(source, _RIGHT_HAND21))
-                person["face_keypoints_2d"] = _flat(_face70(source))
+                person["pose_keypoints_2d"] = _flat(_dwpose_body18(source, raw))
+                person["hand_left_keypoints_2d"] = _flat(_dwpose_left_hand21(source, raw))
+                person["hand_right_keypoints_2d"] = _flat(_dwpose_right_hand21(source, raw))
+                person["face_keypoints_2d"] = _flat(_dwpose_face68(source, raw))
             elif target_key in ("body_25", "coco_18"):
                 person["pose_keypoints_2d"] = _flat(_target_triples(source, target))
             elif target_key == "sapiens_308":
