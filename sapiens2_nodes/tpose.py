@@ -63,43 +63,26 @@ def _kinematic_chain_height_3d(
     neck_nose = seg_d(0, 1, torso * 0.25)
     head_len = neck_nose * 1.15
 
-    # 3. Legs: MidHip -> Thigh -> Shin -> Foot
-    # If legs are severely cropped / cut off by image boundary, reconstruct from torso
-    r_thigh = seg_d(9, 10, 0.0)
-    l_thigh = seg_d(12, 13, 0.0)
-    min_thigh = torso * 0.30
-    if r_thigh < min_thigh and l_thigh < min_thigh:
-        thigh = torso * 0.88
-    elif r_thigh < min_thigh:
-        thigh = l_thigh
-    elif l_thigh < min_thigh:
-        thigh = r_thigh
-    else:
-        thigh = (r_thigh + l_thigh) * 0.5
+    # 3. Legs: MidHip -> Thigh -> Shin -> Foot (with confidence-weighted bilateral symmetry)
+    def bilateral_avg(i_r: int, j_r: int, i_l: int, j_l: int, min_len: float, default_len: float) -> float:
+        d_r = seg_d(i_r, j_r)
+        d_l = seg_d(i_l, j_l)
+        c_r = float(min(conf[i_r], conf[j_r])) if i_r < len(conf) and j_r < len(conf) else 0.0
+        c_l = float(min(conf[i_l], conf[j_l])) if i_l < len(conf) and j_l < len(conf) else 0.0
+        r_ok = d_r >= min_len and c_r > thr
+        l_ok = d_l >= min_len and c_l > thr
+        if r_ok and l_ok:
+            return float((d_r * c_r + d_l * c_l) / (c_r + c_l + 1e-7))
+        elif r_ok:
+            return d_r
+        elif l_ok:
+            return d_l
+        else:
+            return default_len
 
-    r_shin = seg_d(10, 11, 0.0)
-    l_shin = seg_d(13, 14, 0.0)
-    min_shin = torso * 0.30
-    if r_shin < min_shin and l_shin < min_shin:
-        shin = torso * 0.85
-    elif r_shin < min_shin:
-        shin = l_shin
-    elif l_shin < min_shin:
-        shin = r_shin
-    else:
-        shin = (r_shin + l_shin) * 0.5
-
-    r_foot = seg_d(11, 22, 0.0)
-    l_foot = seg_d(14, 19, 0.0)
-    min_foot = torso * 0.10
-    if r_foot < min_foot and l_foot < min_foot:
-        foot = torso * 0.22
-    elif r_foot < min_foot:
-        foot = l_foot
-    elif l_foot < min_foot:
-        foot = r_foot
-    else:
-        foot = (r_foot + l_foot) * 0.5
+    thigh = bilateral_avg(9, 10, 12, 13, min_len=torso * 0.30, default_len=torso * 0.88)
+    shin = bilateral_avg(10, 11, 13, 14, min_len=torso * 0.30, default_len=torso * 0.85)
+    foot = bilateral_avg(11, 22, 14, 19, min_len=torso * 0.10, default_len=torso * 0.22)
 
     # Vertical foot contribution to standing height is heel drop (~40% of ankle-to-toe span)
     return float(head_len + torso + thigh + shin + foot * 0.40)

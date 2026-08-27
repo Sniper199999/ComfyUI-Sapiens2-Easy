@@ -103,6 +103,84 @@ _COCO18_TO_BODY25 = {
 }
 
 
+def _safe_normalize(v: np.ndarray, eps: float = 1e-7, fallback: Optional[np.ndarray] = None) -> np.ndarray:
+    """
+    Safely normalizes a vector with numerical epsilon and fallback for zero-norm vectors.
+    """
+    norm = float(np.linalg.norm(v))
+    if norm > eps:
+        return (v / norm).astype(np.float32)
+    if fallback is not None:
+        return fallback.astype(np.float32)
+    fb = np.zeros_like(v, dtype=np.float32)
+    if len(fb) > 0:
+        fb[0] = 1.0
+    return fb
+
+
+def _build_orthonormal_frame(
+    origin: np.ndarray,
+    up_target: np.ndarray,
+    right_target: np.ndarray,
+) -> np.ndarray:
+    """
+    Constructs a robust SO(3) orthonormal basis matrix [x, y, z] using Gram-Schmidt orthogonalization.
+    x points right (lateral), y points up (vertical), z points forward (out of coronal plane).
+    """
+    y = _safe_normalize(up_target - origin, fallback=np.array([0.0, 1.0, 0.0], dtype=np.float32))
+    right_raw = _safe_normalize(right_target - origin, fallback=np.array([1.0, 0.0, 0.0], dtype=np.float32))
+    z = _safe_normalize(np.cross(right_raw, y), fallback=np.array([0.0, 0.0, 1.0], dtype=np.float32))
+    x = _safe_normalize(np.cross(y, z), fallback=np.array([1.0, 0.0, 0.0], dtype=np.float32))
+    return np.column_stack([x, y, z]).astype(np.float32)
+
+
+def _robust_rotation_matrix(v_from: np.ndarray, v_to: np.ndarray) -> np.ndarray:
+    """
+    Computes 3x3 rotation matrix R in SO(3) aligning v_from to v_to using Rodrigues' formula.
+    Includes dynamic argmin(|v|) axis selection to handle 180° antiparallel vectors without singularities.
+    """
+    a = _safe_normalize(v_from, fallback=np.array([0.0, 1.0, 0.0], dtype=np.float32))
+    b = _safe_normalize(v_to, fallback=np.array([0.0, 1.0, 0.0], dtype=np.float32))
+
+    c = float(np.dot(a, b))  # cosine
+
+    if c >= 0.999999:
+        return np.eye(3, dtype=np.float32)
+
+    if c <= -0.999999:
+        # Antiparallel 180° rotation: select axis with smallest absolute component to guarantee non-zero cross product
+        abs_a = np.abs(a)
+        min_dim = int(np.argmin(abs_a))
+        ortho_axis = np.zeros(3, dtype=np.float32)
+        ortho_axis[min_dim] = 1.0
+        axis = _safe_normalize(np.cross(a, ortho_axis))
+        # R = 2 * (axis @ axis.T) - I
+        return (2.0 * np.outer(axis, axis) - np.eye(3)).astype(np.float32)
+
+    v = np.cross(a, b)
+    vx, vy, vz = v[0], v[1], v[2]
+    K = np.array([
+        [0.0, -vz, vy],
+        [vz, 0.0, -vx],
+        [-vy, vx, 0.0],
+    ], dtype=np.float32)
+
+    eye = np.eye(3, dtype=np.float32)
+    R = eye + K + (K @ K) * (1.0 / (1.0 + c))
+    return R.astype(np.float32)
+
+
+def _compute_hinge_normal(p_root: np.ndarray, p_mid: np.ndarray, p_tip: np.ndarray) -> np.ndarray:
+    """
+    Computes anatomical hinge normal plane for a 3-joint limb chain (Root -> Mid -> Tip),
+    e.g. Shoulder -> Elbow -> Wrist or Hip -> Knee -> Ankle, to lock the axial Twist degree of freedom.
+    """
+    v_upper = p_mid - p_root
+    v_lower = p_tip - p_mid
+    n = np.cross(v_upper, v_lower)
+    return _safe_normalize(n, fallback=np.array([0.0, 0.0, 1.0], dtype=np.float32))
+
+
 def _remap_308_to_body25(triples: np.ndarray) -> np.ndarray:
     out = np.zeros((25, 3), dtype=np.float32)
     for bi, spec in enumerate(_SAPIENS_TO_BODY25):
@@ -505,68 +583,32 @@ def _extract_proportions(
     if hip_span <= 0:
         hip_span = torso * 0.45
 
-    # Arms: Right (2->3, 3->4) and Left (5->6, 6->7)
-    r_uarm = dist(2, 3)
-    l_uarm = dist(5, 6)
-    min_uarm = torso * 0.25
-    if r_uarm < min_uarm and l_uarm < min_uarm:
-        avg_uarm = torso * 0.55
-    elif r_uarm < min_uarm:
-        avg_uarm = l_uarm
-    elif l_uarm < min_uarm:
-        avg_uarm = r_uarm
-    else:
-        avg_uarm = (r_uarm + l_uarm) * 0.5
+    def bilateral_avg(i_r: int, j_r: int, i_l: int, j_l: int, min_len: float, default_len: float) -> float:
+        d_r = dist(i_r, j_r)
+        d_l = dist(i_l, j_l)
+        c_r = float(min(conf[i_r], conf[j_r])) if i_r < len(conf) and j_r < len(conf) else 0.0
+        c_l = float(min(conf[i_l], conf[j_l])) if i_l < len(conf) and j_l < len(conf) else 0.0
+        r_ok = d_r >= min_len and c_r > thr
+        l_ok = d_l >= min_len and c_l > thr
+        if r_ok and l_ok:
+            return float((d_r * c_r + d_l * c_l) / (c_r + c_l + 1e-7))
+        elif r_ok:
+            return d_r
+        elif l_ok:
+            return d_l
+        else:
+            return default_len
 
-    r_farm = dist(3, 4)
-    l_farm = dist(6, 7)
-    min_farm = torso * 0.20
-    if r_farm < min_farm and l_farm < min_farm:
-        avg_farm = torso * 0.48
-    elif r_farm < min_farm:
-        avg_farm = l_farm
-    elif l_farm < min_farm:
-        avg_farm = r_farm
-    else:
-        avg_farm = (r_farm + l_farm) * 0.5
+    # Arms: Upper arms (2->3, 5->6) and Forearms (3->4, 6->7)
+    avg_uarm = bilateral_avg(2, 3, 5, 6, min_len=torso * 0.25, default_len=torso * 0.55)
+    avg_farm = bilateral_avg(3, 4, 6, 7, min_len=torso * 0.20, default_len=torso * 0.48)
 
-    # Legs: Thighs (8->9, 8->12) and Shins (9->10, 12->13)
-    # If legs are severely cropped (length < 30% of expected), reconstruct from torso
-    r_thigh = dist(9, 10)
-    l_thigh = dist(12, 13)
-    min_thigh = torso * 0.30
-    if r_thigh < min_thigh and l_thigh < min_thigh:
-        avg_thigh = torso * 0.88
-    elif r_thigh < min_thigh:
-        avg_thigh = l_thigh
-    elif l_thigh < min_thigh:
-        avg_thigh = r_thigh
-    else:
-        avg_thigh = (r_thigh + l_thigh) * 0.5
+    # Legs: Thighs (9->10, 12->13) and Shins (10->11, 13->14)
+    avg_thigh = bilateral_avg(9, 10, 12, 13, min_len=torso * 0.30, default_len=torso * 0.88)
+    avg_shin = bilateral_avg(10, 11, 13, 14, min_len=torso * 0.30, default_len=torso * 0.85)
 
-    r_shin = dist(10, 11)
-    l_shin = dist(13, 14)
-    min_shin = torso * 0.30
-    if r_shin < min_shin and l_shin < min_shin:
-        avg_shin = torso * 0.85
-    elif r_shin < min_shin:
-        avg_shin = l_shin
-    elif l_shin < min_shin:
-        avg_shin = r_shin
-    else:
-        avg_shin = (r_shin + l_shin) * 0.5
-
-    r_foot = dist(11, 22)
-    l_foot = dist(14, 19)
-    min_foot = torso * 0.10
-    if r_foot < min_foot and l_foot < min_foot:
-        foot_len = torso * 0.22
-    elif r_foot < min_foot:
-        foot_len = l_foot
-    elif l_foot < min_foot:
-        foot_len = r_foot
-    else:
-        foot_len = (r_foot + l_foot) * 0.5
+    # Feet (11->22, 14->19)
+    foot_len = bilateral_avg(11, 22, 14, 19, min_len=torso * 0.10, default_len=torso * 0.22)
 
     # Crown above nose: ~15% of nose-to-neck (suprasternal notch at clavicle)
     head_height = neck_nose * 1.15

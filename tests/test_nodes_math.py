@@ -5,8 +5,97 @@ from sapiens2_nodes.retarget import (
     _draw_skel,
     _retarget_face_dwpose,
     _retarget_kinematics,
+    _safe_normalize,
+    _build_orthonormal_frame,
+    _robust_rotation_matrix,
+    _compute_hinge_normal,
 )
+from sapiens2_nodes.tpose import _kinematic_chain_height_3d
 from sapiens2_nodes.transition import _ease
+
+
+def test_safe_normalize():
+    # Non-zero vector
+    v = np.array([3.0, 4.0, 0.0], dtype=np.float32)
+    normed = _safe_normalize(v)
+    assert abs(np.linalg.norm(normed) - 1.0) < 1e-6
+    assert np.allclose(normed, [0.6, 0.8, 0.0])
+
+    # Zero-norm vector with fallback
+    v_zero = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    fb = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    normed_zero = _safe_normalize(v_zero, fallback=fb)
+    assert np.allclose(normed_zero, fb)
+
+
+def test_build_orthonormal_frame():
+    origin = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    up = np.array([0.0, 2.0, 0.0], dtype=np.float32)
+    right = np.array([2.0, 0.0, 0.0], dtype=np.float32)
+
+    F = _build_orthonormal_frame(origin, up, right)
+    # Check shape (3, 3)
+    assert F.shape == (3, 3)
+    # Check orthogonality: F.T @ F = I
+    assert np.allclose(F.T @ F, np.eye(3), atol=1e-5)
+    # Check right-handed determinant = +1
+    assert abs(np.linalg.det(F) - 1.0) < 1e-5
+
+
+def test_robust_rotation_matrix():
+    # 1. Identity alignment
+    v_same = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    R_id = _robust_rotation_matrix(v_same, v_same)
+    assert np.allclose(R_id, np.eye(3), atol=1e-5)
+
+    # 2. Antiparallel 180° rotation along Z-axis: [0, 0, 1] -> [0, 0, -1]
+    v_z = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    v_z_anti = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+    R_anti_z = _robust_rotation_matrix(v_z, v_z_anti)
+    assert not np.isnan(R_anti_z).any()
+    rotated_z = R_anti_z @ v_z
+    assert np.allclose(rotated_z, v_z_anti, atol=1e-5)
+
+    # 3. Arbitrary 3D vector rotation
+    v_a = _safe_normalize(np.array([1.0, 1.0, 0.0], dtype=np.float32))
+    v_b = _safe_normalize(np.array([0.0, 1.0, 1.0], dtype=np.float32))
+    R_ab = _robust_rotation_matrix(v_a, v_b)
+    assert np.allclose(R_ab @ v_a, v_b, atol=1e-5)
+    assert np.allclose(R_ab.T @ R_ab, np.eye(3), atol=1e-5)
+
+
+def test_compute_hinge_normal():
+    shoulder = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    elbow = np.array([1.0, 1.0, 0.0], dtype=np.float32)
+    wrist = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+
+    n_arm = _compute_hinge_normal(shoulder, elbow, wrist)
+    # Cross product of [1, 0, 0] and [0, -1, 0] is [0, 0, -1]
+    assert np.allclose(np.abs(n_arm), [0.0, 0.0, 1.0], atol=1e-5)
+
+
+def test_kinematic_chain_confidence_weighted_bilateral():
+    kps = np.zeros((25, 2), dtype=np.float32)
+    conf = np.ones(25, dtype=np.float32)
+
+    # Torso: Neck(1) -> MidHip(8)
+    kps[1] = [256.0, 100.0]
+    kps[8] = [256.0, 200.0]
+    # Right thigh: length = 100, conf = 0.9
+    kps[9] = [240.0, 200.0]
+    kps[10] = [240.0, 300.0]
+    conf[9], conf[10] = 0.9, 0.9
+    # Left thigh: length = 80, conf = 0.1 (low confidence)
+    kps[12] = [272.0, 200.0]
+    kps[13] = [272.0, 280.0]
+    conf[12], conf[13] = 0.1, 0.1
+
+    # Shins
+    kps[11] = [240.0, 400.0]
+    kps[14] = [272.0, 400.0]
+
+    h = _kinematic_chain_height_3d(kps, conf)
+    assert h > 300.0
 
 
 def test_draw_skel_colors():
@@ -123,3 +212,4 @@ def test_bounce_ease():
     # Verify non-decreasing progress trend overall ending at 1.0
     val_mid = _ease(0.5, "bounce")
     assert 0.0 < val_mid <= 1.0
+
