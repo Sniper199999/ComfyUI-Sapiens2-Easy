@@ -14,6 +14,8 @@ from .constants import (
     POSE_KEYPOINT_COUNT,
 )
 from .model_loading import (
+    _apply_fp8_weights,
+    _apply_torch_compile,
     _ensure_sapiens_importable,
     _resolve_device,
     _resolve_dtype,
@@ -26,7 +28,7 @@ from .types import Sapiens2PoseModel
 
 
 POSE_GROUPS = ("body", "face", "left_hand", "right_hand", "feet", "extra")
-POSE_MODEL_CACHE: dict[tuple[str, str, str, str, str, str, int, int], Sapiens2PoseModel] = {}
+POSE_MODEL_CACHE: dict[tuple, Sapiens2PoseModel] = {}
 DETECTOR_CACHE: dict[tuple[str, str], tuple[Any, Any, Any]] = {}
 
 
@@ -88,6 +90,8 @@ def load_sapiens2_pose_model(
     device: str,
     dtype: str,
     sapiens_repo_path: str = "",
+    use_fp8: bool = False,
+    use_compile: bool = False,
 ) -> Sapiens2PoseModel:
     checkpoint_path = os.path.abspath(os.path.expanduser(os.path.expandvars(checkpoint_path)))
     detector_path = os.path.abspath(os.path.expanduser(os.path.expandvars(detector_path)))
@@ -105,6 +109,8 @@ def load_sapiens2_pose_model(
         sapiens_repo_path,
         stat.st_mtime_ns,
         stat.st_size,
+        use_fp8,
+        use_compile,
     )
     cached = POSE_MODEL_CACHE.get(cache_key)
     if cached is not None:
@@ -141,6 +147,13 @@ def load_sapiens2_pose_model(
                 f"Checkpoint appears to be arch {detected_arch!r}, but {arch!r} was requested."
             )
     progress.update()
+
+    if use_fp8 and hasattr(torch, "float8_e4m3fn"):
+        model = _apply_fp8_weights(model)
+        print("\033[93m[Sapiens2] FP8 weight quantization applied to pose model.\033[0m")
+    if use_compile:
+        model = _apply_torch_compile(model)
+
     loaded = Sapiens2PoseModel(
         model=model,
         arch=arch,
@@ -152,6 +165,8 @@ def load_sapiens2_pose_model(
         metainfo=metainfo,
         repo_path=repo_path,
         detector_config_path=detector_config_path,
+        use_fp8=use_fp8,
+        use_compile=use_compile,
     )
     POSE_MODEL_CACHE[cache_key] = loaded
     progress.update()

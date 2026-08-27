@@ -565,8 +565,8 @@ class Sapiens2PointmapMeshAdvanced:
             "optional": {"mask": ("MASK",), "normal_map": ("IMAGE",)},
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("preview", "glb_paths", "model_3d")
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING", "SAPIENS2_POINTMAP")
+    RETURN_NAMES = ("preview", "glb_paths", "model_3d", "pointmap")
     FUNCTION = "run"
     CATEGORY = "Sapiens2/Advanced"
 
@@ -636,5 +636,6 @@ class Sapiens2PointmapMeshAdvanced:
         )
 
         first_path = str(paths[0]) if paths else ""
-        result = (_format_preview(image, preview, preview_mode), "\n".join(str(path) for path in paths), first_path)
+        pointmap_tensor = raw.get("pointmap")
+        result = (_format_preview(image, preview, preview_mode), "\n".join(str(path) for path in paths), first_path, pointmap_tensor)
         return {"ui": {"3d": ui_entries}, "result": result}

@@ -14,7 +14,7 @@ from .progress import NodeProgress
 from .types import Sapiens2Model
 
 
-_MODEL_CACHE: dict[tuple[str, str, str, str, str, str, int, int], Sapiens2Model] = {}
+_MODEL_CACHE: dict[tuple, Sapiens2Model] = {}
 
 _DENSE_CONFIG_TEMPLATES = {
     "segmentation": (
@@ -106,6 +106,112 @@ def _resolve_dtype(dtype: str, device: torch.device) -> torch.dtype:
     if device.type == "cuda":
         return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     return torch.float32
+
+
+class FP8Linear(torch.nn.Module):
+    def __init__(self, linear: torch.nn.Linear):
+        super().__init__()
+        self.in_features = linear.in_features
+        self.out_features = linear.out_features
+        self.weight = torch.nn.Parameter(
+            linear.weight.detach().to(torch.float8_e4m3fn), requires_grad=False
+        )
+        if linear.bias is not None:
+            self.bias = torch.nn.Parameter(linear.bias.detach(), requires_grad=False)
+        else:
+            self.register_parameter("bias", None)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.linear(x, self.weight.to(x.dtype), self.bias)
+
+
+def _apply_fp8_weights(model: torch.nn.Module) -> torch.nn.Module:
+    """
+    Recursively replaces nn.Linear modules with FP8Linear (weights quantized to float8_e4m3fn).
+    """
+    for name, child in list(model.named_children()):
+        if isinstance(child, torch.nn.Linear) and child.weight.is_floating_point():
+            setattr(model, name, FP8Linear(child))
+        else:
+            _apply_fp8_weights(child)
+    return model
+
+
+def _has_fp8_params(model: torch.nn.Module) -> bool:
+    for p in model.parameters():
+        if p.dtype in (torch.float8_e4m3fn, getattr(torch, "float8_e5m2", None)):
+            return True
+    for m in model.modules():
+        if isinstance(m, FP8Linear):
+            return True
+    return False
+
+
+def _apply_torch_compile(model: torch.nn.Module) -> torch.nn.Module:
+    """
+    Applies torch.compile to optimize the neural network module with TorchInductor.
+    Gracefully skips Triton FP8 compilation on GPU architectures below SM 8.9 (e.g. RTX 30-series)
+    where Triton lacks fp8e4nv JIT instruction support.
+    """
+    if torch.cuda.is_available() and _has_fp8_params(model):
+        cap = torch.cuda.get_device_capability()
+        if cap < (8, 9):
+            gpu_name = torch.cuda.get_device_name()
+            print(
+                f"\033[93m[Sapiens2] Notice: GPU {gpu_name} (SM {cap[0]}.{cap[1]}) does not support Triton JIT compilation for FP8 e4m3fn (requires SM 8.9+ / RTX 40-series). "
+                f"Running FP8 in PyTorch eager mode without compilation.\033[0m"
+            )
+            return model
+
+    print("\033[93m[Sapiens2] Applying torch.compile (first inference will compile Triton kernels)...\033[0m")
+    try:
+        return torch.compile(model, backend="inductor")
+    except Exception as exc:
+        print(f"\033[91m[Sapiens2] torch.compile failed: {exc}. Falling back to eager mode.\033[0m")
+        return model
+
+
+
+def unload_sapiens2_model(sapiens2_model) -> int:
+    """
+    Removes a model (or all models if None) from cache, moves inner module to CPU, and frees VRAM.
+    """
+    import gc
+    from .pose import POSE_MODEL_CACHE
+
+    removed = 0
+    nn_model = getattr(sapiens2_model, "model", None)
+
+    # Remove from dense model cache
+    keys_to_remove = [k for k, v in _MODEL_CACHE.items() if v is sapiens2_model or getattr(v, "model", None) is nn_model]
+    for k in keys_to_remove:
+        del _MODEL_CACHE[k]
+        removed += 1
+
+    # Remove from pose model cache
+    pose_keys_to_remove = [k for k, v in POSE_MODEL_CACHE.items() if v is sapiens2_model or getattr(v, "model", None) is nn_model]
+    for k in pose_keys_to_remove:
+        del POSE_MODEL_CACHE[k]
+        removed += 1
+
+    if sapiens2_model is None:
+        removed += len(_MODEL_CACHE) + len(POSE_MODEL_CACHE)
+        _MODEL_CACHE.clear()
+        POSE_MODEL_CACHE.clear()
+
+    if nn_model is not None:
+        try:
+            nn_model.to("cpu")
+        except Exception:
+            pass
+        del nn_model
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+
+    return removed
 
 
 def _normalize_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -320,6 +426,8 @@ def load_sapiens2_model(
     dtype: str,
     checkpoint_path: str,
     sapiens_repo_path: str = "",
+    use_fp8: bool = False,
+    use_compile: bool = False,
 ) -> Sapiens2Model:
     checkpoint_path = os.path.abspath(os.path.expanduser(os.path.expandvars(checkpoint_path)))
     if not os.path.isfile(checkpoint_path):
@@ -334,6 +442,8 @@ def load_sapiens2_model(
         sapiens_repo_path,
         stat.st_mtime_ns,
         stat.st_size,
+        use_fp8,
+        use_compile,
     )
     cached = _MODEL_CACHE.get(cache_key)
     if cached is not None:
@@ -361,6 +471,12 @@ def load_sapiens2_model(
         progress,
     )
 
+    if use_fp8 and hasattr(torch, "float8_e4m3fn"):
+        model = _apply_fp8_weights(model)
+        print("\033[93m[Sapiens2] FP8 weight quantization applied.\033[0m")
+    if use_compile:
+        model = _apply_torch_compile(model)
+
     loaded = Sapiens2Model(
         model=model,
         task=task,
@@ -369,6 +485,8 @@ def load_sapiens2_model(
         device=resolved_device,
         dtype=resolved_dtype,
         config_path=str(config_path),
+        use_fp8=use_fp8,
+        use_compile=use_compile,
     )
     _MODEL_CACHE[cache_key] = loaded
     progress.update()

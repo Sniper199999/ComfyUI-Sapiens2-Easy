@@ -1116,11 +1116,13 @@ def _pose_target_image(
     frames = raw.get("frames", [])
     for index, source in enumerate(batch):
         if overlay:
-            canvas = source.numpy()
+            canvas = source.detach().cpu().numpy()
             canvas = np.repeat(canvas, 3, axis=-1) if canvas.shape[-1] == 1 else canvas[..., :3]
-            canvas = (np.clip(canvas, 0, 1) * 255).round().astype(np.uint8)
+            canvas = np.ascontiguousarray((np.clip(canvas, 0, 1) * 255).round().astype(np.uint8))
         else:
             canvas = np.zeros(tuple(source.shape[:2]) + (3,), dtype=np.uint8)
+        canvas = np.ascontiguousarray(canvas)
+
         if index < len(frames):
             frame = frames[index]
             for keypoints, scores in zip(frame.get("keypoints", []), frame.get("keypoint_scores", [])):
@@ -1209,7 +1211,23 @@ class Sapiens2ModelLoader:
                 "task": (TASKS,),
                 "model_size": (MODEL_SIZE_CHOICES, {"default": "0.4b"}),
                 "device": (DEVICES, {"default": "auto"}),
-            }
+            },
+            "optional": {
+                "use_fp8": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "Quantize Linear weights to FP8 (halves VRAM). Speed benefit on RTX 40xx+.",
+                    },
+                ),
+                "use_compile": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "Apply torch.compile (Triton JIT). First run compiles; faster on repeat runs.",
+                    },
+                ),
+            },
         }
 
     RETURN_TYPES = ("SAPIENS2_MODEL",)
@@ -1217,7 +1235,14 @@ class Sapiens2ModelLoader:
     FUNCTION = "load"
     CATEGORY = "Sapiens2"
 
-    def load(self, task: str, model_size: str, device: str = "auto"):
+    def load(
+        self,
+        task: str,
+        model_size: str,
+        device: str = "auto",
+        use_fp8: bool = False,
+        use_compile: bool = False,
+    ):
         checkpoint, _, _, _ = _checkpoint(task, model_size)
         if task == "pose":
             detector, _ = _detector()
@@ -1228,6 +1253,8 @@ class Sapiens2ModelLoader:
                     model_size=model_size,
                     device=device,
                     dtype="auto",
+                    use_fp8=use_fp8,
+                    use_compile=use_compile,
                 ),
             )
         return (
@@ -1237,6 +1264,8 @@ class Sapiens2ModelLoader:
                 device=device,
                 dtype="auto",
                 checkpoint_path=checkpoint,
+                use_fp8=use_fp8,
+                use_compile=use_compile,
             ),
         )
 
@@ -1253,6 +1282,20 @@ class Sapiens2ModelLoaderManual:
             },
             "optional": {
                 "detector_path": ("STRING", {"default": ""}),
+                "use_fp8": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "Quantize Linear weights to FP8 (halves VRAM). Speed benefit on RTX 40xx+.",
+                    },
+                ),
+                "use_compile": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "Apply torch.compile (Triton JIT). First run compiles; faster on repeat runs.",
+                    },
+                ),
             },
         }
 
@@ -1268,6 +1311,8 @@ class Sapiens2ModelLoaderManual:
         model_size: str = "auto",
         device: str = "auto",
         detector_path: str = "",
+        use_fp8: bool = False,
+        use_compile: bool = False,
     ):
         checkpoint = str(checkpoint_path or "").strip()
         if not checkpoint:
@@ -1283,6 +1328,8 @@ class Sapiens2ModelLoaderManual:
                     model_size=model_size,
                     device=device,
                     dtype="auto",
+                    use_fp8=use_fp8,
+                    use_compile=use_compile,
                 ),
             )
         return (
@@ -1292,6 +1339,8 @@ class Sapiens2ModelLoaderManual:
                 device=device,
                 dtype="auto",
                 checkpoint_path=checkpoint,
+                use_fp8=use_fp8,
+                use_compile=use_compile,
             ),
         )
 
@@ -1354,6 +1403,17 @@ class Sapiens2Normal:
 
 
 class Sapiens2Pointmap:
+    """
+    Predicts dense 3D human surface coordinates (X, Y, Z in camera space).
+    The visual preview shows relative surface depth on the foreground body.
+    For 3D Pose Retargeting and accurate biomechanical measurements, connect the 'pointmap'
+    output tensor directly to Sapiens2 Pose Retarget 3D / T-Pose nodes.
+    """
+    DESCRIPTION = (
+        "Dense 3D human body surface reconstruction. Visual preview displays relative foreground surface depth. "
+        "Connect 'pointmap' output to Sapiens2 Pose Retarget 3D / T-Pose nodes for true 3D spatial calculations."
+    )
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -1370,8 +1430,8 @@ class Sapiens2Pointmap:
             "optional": {"mask": ("MASK",), "normal_map": ("IMAGE",)},
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("preview", "pointmap_glb")
+    RETURN_TYPES = ("IMAGE", "STRING", "SAPIENS2_POINTMAP")
+    RETURN_NAMES = ("preview", "pointmap_glb", "pointmap")
     FUNCTION = "run"
     CATEGORY = "Sapiens2"
 
@@ -1423,9 +1483,14 @@ class Sapiens2Pointmap:
             False,
             0.5,
         )
+        pointmap_tensor = raw.get("pointmap")
         return {
             "ui": {"3d": ui_entries},
-            "result": (_format_preview(image, preview, preview_mode), "\n".join(str(path) for path in paths)),
+            "result": (
+                _format_preview(image, preview, preview_mode),
+                "\n".join(str(path) for path in paths),
+                pointmap_tensor,
+            ),
         }
 
 
@@ -1455,3 +1520,27 @@ class Sapiens2Pose:
             _pose_target_image(raw, image, target, overlay=True),
             _openpose_json(raw, target),
         )
+
+
+class Sapiens2ModelUnload:
+    """
+    Unloads a Sapiens2 model from VRAM and clears cached model references.
+    """
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("SAPIENS2_MODEL",),
+            }
+        }
+
+    RETURN_TYPES = ()
+    FUNCTION = "unload"
+    CATEGORY = "Sapiens2"
+    OUTPUT_NODE = True
+
+    def unload(self, model):
+        from .model_loading import unload_sapiens2_model
+        removed = unload_sapiens2_model(model)
+        print(f"\033[92m[Sapiens2] Model unloaded from VRAM ({removed} cache entries cleared).\033[0m")
+        return {}

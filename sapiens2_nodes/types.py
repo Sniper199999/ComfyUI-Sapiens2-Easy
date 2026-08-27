@@ -13,6 +13,8 @@ class Sapiens2Model:
     device: torch.device
     dtype: torch.dtype
     config_path: str = ""
+    use_fp8: bool = False
+    use_compile: bool = False
 
 
 @dataclass
@@ -28,3 +30,5 @@ class Sapiens2PoseModel:
     repo_path: str = ""
     detector_config_path: str = ""
     task: str = "pose"
+    use_fp8: bool = False
+    use_compile: bool = False
