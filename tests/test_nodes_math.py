@@ -213,3 +213,43 @@ def test_bounce_ease():
     val_mid = _ease(0.5, "bounce")
     assert 0.0 < val_mid <= 1.0
 
+
+def test_perspective_foreshortening():
+    """
+    Verifies that the target's 2D perspective foreshortening is perfectly preserved.
+    A heavily foreshortened target limb should remain foreshortened in the output,
+    only scaled by the source's generic body_build_modifier.
+    """
+    from sapiens2_nodes.retarget import _retarget_kinematics
+    
+    ratios_src = {"r_upper_arm": 0.20} # Source has long arms (canonical is 0.16)
+    # The body build modifier should be 0.20 / 0.16 = 1.25
+    
+    ratios_tgt = {"r_upper_arm": 0.05} # Target image has severely foreshortened arm (punching at camera)
+    
+    kps_tgt = np.zeros((25, 2), dtype=np.float32)
+    conf_tgt = np.ones(25, dtype=np.float32)
+    
+    # Neck (1) at (100, 100), RShoulder (2) at (100, 100)
+    # RShoulder (2) to RElbow (3) is very short in 2D (foreshortened)
+    kps_tgt[2] = [100.0, 100.0]
+    kps_tgt[3] = [110.0, 100.0]  # 2D distance is only 10px!
+    
+    ret, conf = _retarget_kinematics(
+        ratios_source=ratios_src,
+        ratios_target=ratios_tgt,
+        kps_target=kps_tgt,
+        conf_target=conf_tgt,
+        height_ratio=1.0,
+        grounding="none",
+        canvas_wh=(512, 512)
+    )
+    
+    dv_out = ret[3] - ret[2]
+    dist_out = np.linalg.norm(dv_out)
+    
+    # The output distance should be 10px * (0.20 / 0.16) = 12.5px
+    # If the foreshortening bug existed, it would have divided by r_tgt (0.05),
+    # leading to 10px * (0.20 / 0.05) = 40px!
+    assert abs(dist_out - 12.5) < 1e-4, f"Foreshortening broken: expected 12.5, got {dist_out}"
+

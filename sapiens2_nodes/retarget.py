@@ -62,6 +62,21 @@ _SEG_NAMES = {
     (14, 21): "r_foot_len",
 }
 
+# Ideal unforeshortened canonical human proportions (used to preserve 2D perspective foreshortening)
+_CANONICAL_RATIOS = {
+    "r_torso": 0.28,
+    "r_neck_nose": 0.08,
+    "r_eye_span": 0.04,
+    "r_ear_span": 0.05,
+    "r_shoulder_span": 0.12,
+    "r_upper_arm": 0.16,
+    "r_forearm": 0.14,
+    "r_hip_span": 0.09,
+    "r_thigh": 0.24,
+    "r_shin": 0.23,
+    "r_foot_len": 0.06,
+}
+
 _BODY25_EDGES = (
     (1, 8),
     (1, 2), (1, 5),
@@ -766,16 +781,21 @@ def _retarget_kinematics(
             p_chi = kps_target[child]
             dv_target = p_chi - p_par
 
-            # 2. Segment proportion ratio scaling
+            # 2. Segment proportion ratio scaling (2D Perspective Foreshortening Fix)
+            # We divide by the ideal unforeshortened canonical ratio instead of the 2D
+            # foreshortened target ratio (r_tgt). This creates a 'body_build_modifier'
+            # (e.g., source arm is 10% longer than average human arm) which we apply
+            # to the target's exact 2D projection, perfectly preserving its depth foreshortening!
             seg_key = _SEG_NAMES.get((parent, child), "r_torso")
             r_src = ratios_source.get(seg_key, 0.15)
-            r_tgt = ratios_target.get(seg_key, 0.15)
+            r_canonical = _CANONICAL_RATIOS.get(seg_key, 0.15)
 
-            if r_tgt > 1e-4:
-                anatomy_scale = float(np.clip(r_src / r_tgt, 0.4, 2.5))
+            if r_canonical > 1e-4:
+                body_build_modifier = float(np.clip(r_src / r_canonical, 0.4, 2.5))
             else:
-                anatomy_scale = 1.0
-            bone_scale = float(np.clip(anatomy_scale * height_ratio, 0.25, 4.0))
+                body_build_modifier = 1.0
+                
+            bone_scale = float(np.clip(body_build_modifier * height_ratio, 0.25, 4.0))
 
             ret[child] = ret[parent] + dv_target * bone_scale
             eff_conf[child] = max(conf_target[child], 0.7)
