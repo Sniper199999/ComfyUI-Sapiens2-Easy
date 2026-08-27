@@ -737,12 +737,8 @@ def _retarget_kinematics(
 
             ret[child] = ret[parent] + dv_target * bone_scale
             eff_conf[child] = max(conf_target[child], 0.7)
-        elif conf_target[child] > thr:
-            # Child is visible in target, place directly
-            ret[child] = kps_target[child].copy()
-            eff_conf[child] = conf_target[child]
         else:
-            # Child is missing in target: use default anatomical offset from parent to prevent skeleton collapse
+            # Target connection is broken (parent or both missing): use default anatomical offset from ret[parent]
             dv_default = default_offsets.get((parent, child), np.array([0.0, 20.0], np.float32))
             ret[child] = ret[parent] + dv_default
             eff_conf[child] = max(eff_conf[parent] * 0.7, 0.3)
@@ -988,12 +984,13 @@ def _retarget_face_dwpose(
     rot_mat = np.array([[cos_a, -sin_a], [sin_a, cos_a]], dtype=np.float32)
 
     for i in range(68):
-        # Target landmark visibility governs output landmark rendering
+        # Target landmark visibility governs output landmark rendering, supplemented by source identity face landmarks
         c_i = conf_t[i]
-        if c_i > thr:
+        c_s = conf_s[i] if src_has_face else 0.0
+        if c_i > thr or c_s > thr:
             rotated = rot_mat @ (F_ret_norm[i] * scale_f)
             pts_out[i] = nose_pt + rotated
-            conf_out[i] = c_i
+            conf_out[i] = max(c_i, c_s)
 
     # Synchronize retargeted body keypoints with computed face landmarks for perfect alignment
     if conf_out[30] > thr and np.sum(conf_out > thr) >= 10:
@@ -1322,13 +1319,13 @@ def _draw_skel(canvas: np.ndarray, kps: np.ndarray, conf: np.ndarray,
         cv2.line(canvas_c,
                  (int(kps[p, 0]), int(kps[p, 1])),
                  (int(kps[c, 0]), int(kps[c, 1])),
-                 col[::-1], thickness, cv2.LINE_AA)
+                 col, thickness, cv2.LINE_AA)
     if style != "wireframe" and dot_r > 0:
         for i in range(min(len(kps), 25)):
             if conf[i] < thr: continue
             col = _EDGE_COLORS[i % len(_EDGE_COLORS)]
             pt  = (int(kps[i, 0]), int(kps[i, 1]))
-            cv2.circle(canvas_c, pt, dot_r,  col[::-1],   -1, cv2.LINE_AA)
+            cv2.circle(canvas_c, pt, dot_r,  col,   -1, cv2.LINE_AA)
             cv2.circle(canvas_c, pt, dot_r,  (255,255,255), 1, cv2.LINE_AA)
 
 

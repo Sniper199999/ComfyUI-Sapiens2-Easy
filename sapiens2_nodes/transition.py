@@ -37,10 +37,19 @@ def _ease(t: float, mode: str = "smooth_in_out") -> float:
     elif mode == "smooth_in_out":
         return 0.5 * (1.0 - np.cos(t * np.pi))
     elif mode == "bounce":
-        if t < 0.5:
-            return 0.5 * (1.0 - np.cos(t * 2.0 * np.pi))
+        n1 = 7.5625
+        d1 = 2.75
+        if t < 1.0 / d1:
+            return float(n1 * t * t)
+        elif t < 2.0 / d1:
+            t_sub = t - (1.5 / d1)
+            return float(n1 * t_sub * t_sub + 0.75)
+        elif t < 2.5 / d1:
+            t_sub = t - (2.25 / d1)
+            return float(n1 * t_sub * t_sub + 0.9375)
         else:
-            return 0.5 * (1.0 - np.cos((1.0 - t) * 2.0 * np.pi))
+            t_sub = t - (2.625 / d1)
+            return float(n1 * t_sub * t_sub + 0.984375)
     return 0.5 * (1.0 - np.cos(t * np.pi))
 
 
